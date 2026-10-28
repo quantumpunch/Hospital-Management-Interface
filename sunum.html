@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ağırlıklı A*</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tektur:wght@500;700;900&family=Chakra+Petch:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap">
+<style>
+/* === THEME: 8-bit Orbit === */
+:root {
+  --void: #0A0E27; --navy: #0F1B3D; --cyan: #5EDCF4; --pink: #F0A6CA; --yellow: #F4D03F; --lav: #E2D5F2; --white: #fff;
+  --body: rgba(255,255,255,.75);
+  --display: 'Tektur', 'Segoe UI', sans-serif; --text: 'Chakra Petch', 'Segoe UI', sans-serif; --mono: 'Space Mono', Consolas, monospace;
+  --stage-bg: #05071a; --slide-bg: var(--void);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* === FIXED STAGE (viewport-base.css) === */
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--stage-bg, #000); }
+.deck-viewport { position: fixed; inset: 0; overflow: hidden; background: var(--stage-bg, #000); }
+.deck-stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; transform-origin: 0 0; background: var(--slide-bg, #fff); }
+.slide { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: hidden; display: block; visibility: hidden; opacity: 0; pointer-events: none; background: var(--slide-bg, #fff); }
+.slide.active, .slide.visible { visibility: visible; opacity: 1; pointer-events: auto; z-index: 1; }
+img, video, canvas, svg { max-width: 100%; max-height: 100%; }
+@media print {
+  html, body { width: 1920px; height: auto; overflow: visible; background: #fff; }
+  .deck-viewport { position: static; overflow: visible; background: #fff; }
+  .deck-stage { position: static; width: auto; height: auto; transform: none !important; background: none; }
+  .slide { position: relative; display: block !important; visibility: visible !important; opacity: 1 !important; pointer-events: auto !important; width: 1920px; height: 1080px; break-after: page; page-break-after: always; }
+  .slide:last-child { break-after: auto; page-break-after: auto; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .2s !important; } }
+
+/* === SURFACE + ATMOSPHERE (grid, scanlines, CRT vignette) === */
+body { cursor: crosshair; }
+.slide { color: var(--white); font-family: var(--text); transition: opacity .5s; background: radial-gradient(ellipse at 50% 45%, var(--navy), var(--void) 72%); }
+.slide::before { content: ""; position: absolute; inset: 0; z-index: 0; background-image: linear-gradient(rgba(94,220,244,.07) 2px, transparent 2px), linear-gradient(90deg, rgba(94,220,244,.07) 2px, transparent 2px); background-size: 40px 40px; }
+.slide::after { content: ""; position: absolute; inset: 0; z-index: 50; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 2px, transparent 2px 4px), radial-gradient(ellipse at center, transparent 55%, rgba(5,7,26,.55) 100%); }
+.slide.lav { background: var(--lav); color: var(--navy); }
+.slide.lav::before { background-image: linear-gradient(rgba(15,27,61,.08) 2px, transparent 2px), linear-gradient(90deg, rgba(15,27,61,.08) 2px, transparent 2px); }
+.slide.lav::after { background: repeating-linear-gradient(0deg, rgba(15,27,61,.05) 0 2px, transparent 2px 4px); }
+.stars { position: absolute; inset: 0; z-index: 1; }
+.c { position: absolute; z-index: 10; }
+
+/* === CHROME === */
+.hud { left: 96px; right: 96px; top: 64px; display: flex; justify-content: space-between; font: 700 24px/1 var(--mono); letter-spacing: .14em; color: var(--cyan); text-transform: uppercase; }
+.hud b { color: var(--yellow); }
+.lav .hud, .lav .hud b { color: var(--navy); }
+.brk { position: absolute; z-index: 10; width: 32px; height: 32px; border: 4px solid var(--cyan); }
+.lav .brk { border-color: var(--navy); }
+.b1 { left: 56px; top: 112px; border-right: 0; border-bottom: 0; } .b2 { right: 56px; bottom: 56px; border-left: 0; border-top: 0; }
+.pill { display: inline-block; background: var(--navy); color: var(--yellow); font: 700 24px/1 var(--mono); letter-spacing: .2em; text-transform: uppercase; padding: 12px 20px; }
+.h { font: 700 88px/1.08 var(--display); color: var(--cyan); text-shadow: 4px 4px 0 var(--navy); }
+.lav .h { color: var(--navy); text-shadow: none; }
+.p { font: 400 36px/1.6 var(--text); color: var(--body); }
+.lav .p { color: rgba(15,27,61,.78); }
+.mono { font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.hl { color: var(--yellow); }
+.lav .hl { color: #b0306a; }
+
+/* === REVEAL === */
+.r { opacity: 0; transform: translateY(24px); transition: opacity .6s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1); }
+.slide.visible .r { opacity: 1; transform: none; }
+.slide.visible .r.d1 { transition-delay: .12s; } .slide.visible .r.d2 { transition-delay: .24s; } .slide.visible .r.d3 { transition-delay: .36s; } .slide.visible .r.d4 { transition-delay: .48s; }
+
+/* === S1 TITLE === */
+.hero { font: 900 236px/0.92 var(--display); color: var(--yellow); letter-spacing: .02em; text-shadow: 4px 4px 0 #c99b22, 8px 8px 0 #8a5d16, 12px 12px 0 var(--navy); }
+.hero small { display: block; font-size: 148px; color: var(--white); text-shadow: 4px 4px 0 var(--pink), 8px 8px 0 var(--void); }
+.badges { display: flex; gap: 16px; }
+.badge { border: 2px solid var(--yellow); color: var(--yellow); font: 400 22px/1 var(--mono); letter-spacing: .12em; padding: 12px 18px; text-transform: uppercase; }
+.blink { animation: blink 1.1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* === MAP CANVASES === */
+.map { display: block; background: var(--void); border: 4px solid var(--cyan); box-shadow: 8px 8px 0 var(--pink); image-rendering: pixelated; }
+.lav .map { border-color: var(--navy); box-shadow: 8px 8px 0 var(--navy); }
+.cap { font: 700 24px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.cap b { font: 900 56px/1 var(--display); letter-spacing: 0; color: var(--cyan); text-shadow: 3px 3px 0 var(--navy); display: block; margin-top: 8px; }
+.lav .cap b { color: var(--navy); text-shadow: 3px 3px 0 var(--pink); }
+
+/* === S3 SPECTRUM === */
+.formula { font: 900 120px/1 var(--display); color: var(--white); text-shadow: 4px 4px 0 var(--navy); letter-spacing: .02em; }
+.formula .w { color: var(--yellow); text-shadow: 4px 4px 0 #8a5d16, 8px 8px 0 var(--navy); display: inline-block; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { transform: scale(1.18); } }
+.rail { position: absolute; left: 0; right: 0; top: 34px; height: 8px; background: linear-gradient(90deg, var(--cyan), var(--pink), var(--yellow)); }
+.stops { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
+.stop { position: relative; padding-top: 96px; }
+.stop::before { content: ""; position: absolute; left: 0; top: 20px; width: 36px; height: 36px; background: var(--cyan); border: 4px solid var(--navy); }
+.stop.on::before { background: var(--yellow); box-shadow: 0 0 0 6px rgba(244,208,63,.3); }
+.stop .k { font: 700 26px/1 var(--mono); color: var(--yellow); letter-spacing: .1em; }
+.stop h3 { font: 700 46px/1.1 var(--display); color: var(--cyan); margin: 14px 0 12px; }
+.stop p { font: 400 28px/1.5 var(--text); color: var(--body); }
+.stop.on h3 { color: var(--yellow); }
+
+/* === S4 VIDEO === */
+
+/* === S5 GUARANTEE === */
+.stat { background: rgba(94,220,244,.08); border: 2px solid rgba(94,220,244,.25); padding: 40px 36px; position: relative; }
+.stat::before, .stat::after { content: ""; position: absolute; width: 24px; height: 24px; border: 4px solid var(--cyan); }
+.stat::before { left: -4px; top: -4px; border-right: 0; border-bottom: 0; } .stat::after { right: -4px; bottom: -4px; border-left: 0; border-top: 0; }
+.stat .n { font: 900 128px/1 var(--display); color: var(--cyan); text-shadow: 4px 4px 0 var(--navy); }
+.stat .l { font: 700 24px/1.4 var(--mono); color: var(--pink); letter-spacing: .12em; text-transform: uppercase; margin-top: 16px; }
+.stat.feat { border-color: var(--yellow); box-shadow: 8px 8px 0 var(--yellow); }
+.stat.feat .n { color: var(--yellow); }
+.eq { font: 900 64px/1 var(--display); color: var(--yellow); align-self: center; }
+
+/* === S6 DEMO === */
+.ctl { display: flex; align-items: center; gap: 40px; }
+.ctl label { font: 700 28px/1 var(--mono); letter-spacing: .1em; display: flex; align-items: center; gap: 20px; }
+.ctl input[type=range] { width: 420px; height: 32px; accent-color: var(--yellow); }
+.wv { font: 900 64px/1 var(--display); color: var(--yellow); min-width: 2.2ch; }
+.btn { font: 700 32px/1 var(--display); letter-spacing: .08em; text-transform: uppercase; background: var(--cyan); color: var(--navy); border: 0; padding: 22px 44px; cursor: pointer;
+  box-shadow: 4px 0 0 var(--navy), 0 4px 0 var(--navy), 4px 4px 0 var(--navy), 8px 4px 0 var(--yellow), 4px 8px 0 var(--yellow), 8px 8px 0 var(--yellow); }
+.btn:active { transform: translate(2px,2px); }
+.btn:focus-visible, input:focus-visible { outline: 4px solid var(--pink); outline-offset: 4px; }
+
+/* === S7 CLOSING === */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+.tile { background: rgba(15,27,61,.6); border: 2px solid rgba(94,220,244,.25); padding: 40px; position: relative; }
+.tile::before { content: ""; position: absolute; left: -4px; top: -4px; width: 24px; height: 24px; border: 4px solid var(--pink); border-right: 0; border-bottom: 0; }
+.tile .k { font: 700 22px/1 var(--mono); color: var(--pink); letter-spacing: .16em; }
+.tile h3 { font: 700 48px/1.1 var(--display); color: var(--cyan); margin: 18px 0 16px; }
+.tile p { font: 400 28px/1.55 var(--text); color: var(--body); }
+.end { font: 700 60px/1.25 var(--display); color: var(--white); }
+.end .hl { text-shadow: 3px 3px 0 var(--navy); }
+
+/* === TREE SLIDES (2, 4, 5) === */
+.defs { display: grid; gap: 10px; }
+.defs p { font: 400 34px/1.45 var(--text); color: var(--body); }
+.defs b { font-family: var(--display); color: var(--white); }
+.cy { color: var(--cyan); } .ye { color: var(--yellow); } .pk { color: var(--pink); }
+.mut { color: rgba(255,255,255,.5); font-size: 26px; }
+.tbtn { font: 700 22px/1 var(--mono); letter-spacing: .1em; background: var(--navy); color: var(--cyan); border: 2px solid var(--cyan); padding: 12px 18px; cursor: pointer; }
+.tbtn.on { background: var(--yellow); color: var(--navy); border-color: var(--yellow); box-shadow: 4px 4px 0 var(--void); }
+.tbtn:focus-visible { outline: 4px solid var(--pink); outline-offset: 4px; }
+.panel { background: rgba(15,27,61,.8); border: 2px solid rgba(94,220,244,.25); padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.olist { display: grid; gap: 4px; font: 400 22px/1.3 var(--mono); color: var(--body); }
+.olist div { display: flex; justify-content: space-between; padding: 6px 10px; }
+.olist .top { background: var(--yellow); color: var(--navy); font-weight: 700; }
+.olist .more { color: rgba(255,255,255,.45); }
+.tcmp { margin-top: auto; border-top: 4px solid var(--yellow); padding-top: 16px; font: 500 26px/1.45 var(--text); color: var(--white); }
+.tcmp b { font: 900 34px/1.2 var(--display); color: var(--yellow); }
+
+/* === OUTSIDE-STAGE CHROME === */
+.counter { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; font: 400 13px/1 'Space Mono', monospace; letter-spacing: .15em; color: #5EDCF4; background: rgba(15,27,61,.8); padding: 6px 12px; }
+</style>
+</head>
+<body>
+<div class="deck-viewport">
+<main class="deck-stage" id="deckStage">
+
+<!-- === SLIDE 1: KANCA ===
+  Konuşmacı 1 (~15 sn): "Bir oyunda karakterinizi haritada bir yere tıklayıp gönderiyorsunuz. Bilgisayar en kısa yolu mu arasın, yoksa hemen bir yol mu bulsun? Bugün ikisini tek bir sayıyla nasıl dengelediğimizi anlatacağız: Ağırlıklı A*." -->
+<section class="slide active visible">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Yapay Zekaya Giriş · Sezgisel Arama</span><span><b>LVL</b> 01/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:250px"><span class="pill">Yol bulma</span></div>
+  <h1 class="c hero r d1" style="left:104px;top:340px">
+    <small>Ağırlıklı</small>A*
+  </h1>
+  <p class="c p r d2" style="left:112px;top:790px;color:var(--lav);font-size:48px;font-weight:600">En kısa yol mu, en hızlı cevap mı?</p>
+  <div class="c badges r d3" style="left:112px;top:900px"><span class="badge">f = g + w·h</span><span class="badge">Oyunlar</span><span class="badge">Robotlar</span></div>
+  <canvas class="c map r d2" id="m1" width="30" height="18" style="right:120px;top:270px;width:720px;height:432px"></canvas>
+  <div class="c cap r d3" style="right:120px;top:744px;width:720px;display:flex;justify-content:space-between"><span>Açılan düğüm <span id="m1n" class="hl">000</span></span><span>w = <span class="hl">3</span></span></div>
+  <div class="c mono blink" style="right:120px;bottom:96px;font-size:24px;color:var(--cyan)">&gt; Devam etmek için → bas_</div>
+</section>
+
+<!-- === SLIDE 2: PROBLEM ===
+  Konuşmacı 1 (~20 sn): "Kahramanımız ortadaki köyden çıkıyor. Her kavşakta iki yol var, her yolun süresi belli. 9 kavşak sonra 512 yere varılıyor; sadece 4'ü kale kapısı, şu pembe kareler. Her kavşak için iki sayı tutarız: g, şimdiye kadar yürüdüğümüz süre; h, kaleye kalan sürenin tahmini, asla abartmaz. Sadece g'ye bakan Dijkstra tam 392 kavşağa bakıyor. Daha azıyla bulabilir miyiz?" -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Problem</span><span><b>LVL</b> 02/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <canvas class="c r d1" id="radial2" width="760" height="760" style="left:96px;top:200px;width:760px;height:760px"></canvas>
+  <div class="c r" style="left:960px;top:200px"><span class="pill">Köy → Kale</span></div>
+  <h2 class="c h r d1" style="left:960px;top:280px;width:880px;font-size:56px">1023 kavşak, 4 kale kapısı.<br><span class="hl">Kaçına bakmamız gerekir?</span></h2>
+  <div class="c defs r d2" style="left:960px;top:470px;width:880px">
+    <p><b class="cy">g</b> = şimdiye kadar yürünen süre <span class="mut">(gerçek)</span></p>
+    <p><b class="ye">h</b> = kaleye kalan süre <span class="mut">(tahmin, asla abartmaz)</span></p>
+  </div>
+  <div class="c stat r d3" style="left:960px;top:660px;width:880px"><div class="n" style="font-size:96px">392</div><div class="l">Sadece g'ye bakan Dijkstra bu kadar kavşağa bakıyor</div></div>
+</section>
+
+<!-- === SLIDE 3: TEK SAYI w ===
+  Konuşmacı 1 (~25 sn): "Ağırlıklı A* tek bir şey değiştiriyor: h'yi w ile çarpıyoruz. w=0 iken tahmine hiç bakmıyoruz, bu Dijkstra. w=1 klasik A*. w büyüdükçe algoritma 'hedef şu tarafta' tahminine daha çok güveniyor ve hedefe koşuyor. w sonsuza giderse sadece tahmine bakan açgözlü aramaya dönüşür." -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Fikir</span><span><b>LVL</b> 03/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:150px"><span class="pill">Tek bir sayı</span></div>
+  <div class="c formula r d1" style="left:112px;top:250px">f(n) = g(n) + <span class="w">w</span>·h(n)</div>
+  <p class="c p r d2" style="left:112px;top:420px;width:1500px">g: başlangıçtan buraya <span class="hl">gerçek</span> maliyet &nbsp;·&nbsp; h: buradan hedefe <span class="hl">tahmin</span></p>
+  <div class="c r d3" style="left:112px;right:112px;top:560px">
+    <div class="rail"></div>
+    <div class="stops">
+      <div class="stop"><span class="k">w = 0</span><h3>Dijkstra</h3><p>Tahmine bakmaz, her yöne yayılır. En kısa yol, çok iş.</p></div>
+      <div class="stop"><span class="k">w = 1</span><h3>Klasik A*</h3><p>Dengeli. Yine en kısa yol, daha az iş.</p></div>
+      <div class="stop on"><span class="k">w &gt; 1</span><h3>Ağırlıklı A*</h3><p>Hedefe koşar. Çok hızlı, yol biraz uzayabilir.</p></div>
+      <div class="stop"><span class="k">w → ∞</span><h3>Açgözlü</h3><p>Sadece tahmin. En hızlı, garanti yok.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- === SLIDE 4: KARAR AĞACI ===
+  Konuşmacı 2 (~40 sn): w=3 ile başla, → ile birkaç adım ilerle. "Her kutuda o kavşağın f değeri yazıyor. Algoritma her adımda sağdaki listenin en üstünü, yani en küçük f'yi açıyor. Bakın 2. adımda: seçilen 45, rakip 71. Sağ dala hiç girmiyor." F ile hızlı ileri: "42 adımda kaleye vardı, 49 dakika. Bekleyen 39 düğümün hepsinin f'si 52 ve üstü, 49'dan büyük, o yüzden gidilmedi." Sonra W ile w=1'e geç ve F: "Klasik A* aynı ağaçta 235 düğüm açıyor ama 37 dakikalık en iyi yolu buluyor." -->
+<section class="slide">
+  <div class="c hud"><span>Karar ağacı</span><span><b>LVL</b> 04/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:132px;display:flex;align-items:center;gap:24px">
+    <span class="pill">Her adımda en küçük f açılır</span>
+    <button class="tbtn on" id="tw3" type="button">w = 3</button>
+    <button class="tbtn" id="tw1" type="button">w = 1</button>
+    <button class="tbtn" id="tff" type="button">Hızlı ileri ⏩</button>
+    <span class="mono" id="tstep" style="font-size:24px;color:var(--cyan)"></span>
+  </div>
+  <canvas class="c r d1" id="tree" width="1340" height="800" style="left:72px;top:216px;width:1340px;height:800px"></canvas>
+  <div class="c panel r d2" style="left:1440px;top:216px;width:400px;height:800px">
+    <div class="mono" style="font-size:20px;color:var(--pink)">OPEN · f'ye göre sıralı</div>
+    <div id="olist" class="olist"></div>
+    <div id="tcmp" class="tcmp"></div>
+  </div>
+</section>
+
+<!-- === SLIDE 5: f NASIL BÜYÜYOR ===
+  Konuşmacı 2 (~30 sn): "Soldaki grafikte her adımda açılan düğümün f değeri var. w=1'de f bir su seviyesi gibi 9'dan 37'ye yükseliyor ve hiç 37'yi geçmiyor: f burada 'en az bu kadar sürer' demek, o yüzden 37'nin altındaki her dalı açmak zorunda, 235 düğüm. w=3'te f tahminin 3 katıyla 27'den başlıyor, 45-54 arasında dalgalanıyor; artık bir alt sınır değil, bir pusula. Sağda bulunan yolun her adımında f'nin ne kadarı gerçek, ne kadarı tahmin: w=3'te tahmin baskın." -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>f nasıl büyüyor</span><span><b>LVL</b> 05/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:132px"><span class="pill">Açılan her düğümün f değeri</span></div>
+  <canvas class="c r d1" id="fchart" width="1060" height="560" style="left:96px;top:210px;width:1060px;height:560px"></canvas>
+  <canvas class="c r d2" id="fbars" width="640" height="560" style="left:1196px;top:210px;width:640px;height:560px"></canvas>
+  <div class="c r d3" style="left:112px;right:112px;top:800px;display:grid;grid-template-columns:1fr 1fr;gap:40px">
+    <p class="p" style="font-size:30px"><b class="cy">w = 1:</b> f bir <span class="cy">alt sınır</span>. 37'yi geçmeden durmaz, altında kalan her dalı açar → <b class="cy">235 düğüm · 37 dk</b></p>
+    <p class="p" style="font-size:30px"><b class="pk">w = 3:</b> f bir <span class="pk">pusula</span>. Tahmin 3 kat ağır, hedefe sürükler → <b class="pk">42 düğüm · 49 dk</b></p>
+  </div>
+</section>
+
+<!-- === SLIDE 6: GARANTİ ===
+  Konuşmacı 2 (~20 sn): "Peki ne kadar kötü olabilir? Garanti şu: h hiçbir zaman gerçek kalan maliyeti abartmıyorsa, bulunan yol en iyi yolun en fazla w katıdır. Ağacımızda en iyi yol 37 dakika. w=3 ile sınır 111, gerçekte 49 bulduk: 5,6 kat daha az işle yüzde 32 daha uzun bir yol." -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Garanti</span><span><b>LVL</b> 06/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:150px"><span class="pill">Ne kadar kötü olabilir?</span></div>
+  <div class="c formula r d1" style="left:112px;top:250px;font-size:104px">maliyet ≤ <span class="w">w</span> × en iyi</div>
+  <p class="c p r d2" style="left:112px;top:410px;width:1600px">Şart: h kabul edilebilir olmalı, yani kaleye kalan süreyi <span class="hl">asla abartmamalı</span>.</p>
+  <div class="c r d3" style="left:112px;right:112px;top:560px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:40px">
+    <div class="stat"><div class="n">37</div><div class="l">En iyi yol, dakika (w = 1)</div></div>
+    <div class="eq">→</div>
+    <div class="stat"><div class="n">111</div><div class="l">w = 3 için en kötü sınır</div></div>
+    <div class="eq">→</div>
+    <div class="stat feat"><div class="n">49</div><div class="l">Gerçekte bulunan · %32 uzun</div></div>
+  </div>
+</section>
+
+<!-- === SLIDE 7: CANLI DEMO ===
+  Konuşmacı 3 (~35 sn): "Şimdi w'yi biz çevirelim." w=1, Oynat: "235 kavşak, 37 dakika: en iyi yol, en çok iş." w=2: "67 kavşak, hâlâ 37 dakika!" w=3: "42 kavşak ama 49 dakika. Daha iyi bir yol değil; daha hızlı bulunan, yeterince iyi bir yol." w=5: "61 kavşak: w büyüdükçe iş her zaman azalmıyor. Doğru w denenerek bulunur." -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Canlı demo</span><span><b>LVL</b> 07/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c ctl r" style="left:112px;top:132px">
+    <label for="wIn">Ağırlık w <input id="wIn" type="range" min="1" max="5" step="0.5" value="1"> <span class="wv" id="wOut">1</span></label>
+    <button class="btn" id="play" type="button">▶ Oynat</button>
+  </div>
+  <canvas class="c r d1" id="radial7" width="760" height="760" style="left:96px;top:250px;width:760px;height:760px"></canvas>
+  <div class="c r d2" style="left:960px;top:250px;width:860px;display:grid;gap:24px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+      <div class="stat"><div class="n" id="dN">235</div><div class="l">Bakılan kavşak</div></div>
+      <div class="stat"><div class="n" id="dC">37</div><div class="l" id="dCl">Yol, dakika</div></div>
+    </div>
+    <p class="p" id="dNote" style="font-size:30px;min-height:96px"></p>
+    <canvas id="wbars" width="860" height="340" style="width:860px;height:340px"></canvas>
+  </div>
+</section>
+
+<!-- === SLIDE 9: NEREDE + KAPANIŞ ===
+  Konuşmacı 3 (~20 sn): "Nerede kullanılır? Yüzlerce birimin aynı anda yol aradığı oyunlarda, gerçek zamanlı karar veren robotlarda. En güzeli Anytime A*: önce büyük w ile hemen bir yol bul, zaman kaldıkça w'yi küçültüp yolu iyileştir. Yani mükemmel yol mu, şimdi yeterince iyi yol mu? Kararı w veriyor. Teşekkürler." -->
+<section class="slide">
+  <canvas class="stars" width="1920" height="1080"></canvas>
+  <div class="c hud"><span>Nerede kullanılır</span><span><b>LVL</b> 08/08</span></div>
+  <i class="brk b1"></i><i class="brk b2"></i>
+  <div class="c r" style="left:112px;top:150px"><span class="pill">Gerçek hayat</span></div>
+  <div class="c tiles r d1" style="left:112px;right:112px;top:250px">
+    <div class="tile"><span class="k">Oyunlar</span><h3>NPC yolları</h3><p>Yüzlerce birim aynı anda yol arar. Her kareye milisaniyeler düşer.</p></div>
+    <div class="tile"><span class="k">Robotik</span><h3>Gerçek zaman</h3><p>Robot dururken değil, hareket ederken plan yapar. Hızlı plan şart.</p></div>
+    <div class="tile"><span class="k">Anytime A*</span><h3>Önce hızlı, sonra iyi</h3><p>Büyük w ile hemen bir yol. Zaman kaldıkça w küçülür, yol iyileşir.</p></div>
+  </div>
+  <p class="c end r d2" style="left:112px;top:720px;width:1600px">Mükemmel yol mu, <span class="hl">şimdi</span> yeterince iyi yol mu?<br>Kararı <span class="hl">w</span> verir.</p>
+  <div class="c mono r d3 blink" style="left:112px;top:940px;font-size:30px;color:var(--pink)">Teşekkürler · Sorular?_</div>
+</section>
+
+</main>
+</div>
+<div class="counter" id="counter">01 / 07</div>
+
+<script>
+/* === A* (same algorithm the numbers on the slides come from) === */
+const COLS = 30, ROWS = 18, START = [2, 9], GOAL = [27, 9];
+const idx = (c, r) => r * COLS + c;
+const cost = new Array(COLS * ROWS).fill(1);
+for (let r = 1; r <= 16; r++) for (let c = 13; c <= 16; c++) cost[idx(c, r)] = 6;
+
+function* astar(w) {
+  const N = COLS * ROWS, s = idx(...START), t = idx(...GOAL);
+  const g = new Array(N).fill(Infinity), par = new Array(N).fill(-1);
+  const closed = new Uint8Array(N), open = new Set([s]);
+  const h = i => Math.abs(i % COLS - GOAL[0]) + Math.abs(Math.floor(i / COLS) - GOAL[1]);
+  g[s] = 0; let expanded = 0;
+  while (open.size) {
+    let best = -1, bf = Infinity, bh = Infinity;
+    for (const i of open) { const f = g[i] + w * h(i), hi = h(i); if (f < bf || (f === bf && hi < bh)) { best = i; bf = f; bh = hi; } }
+    open.delete(best); closed[best] = 1; expanded++;
+    if (best === t) { const path = []; for (let i = t; i !== -1; i = par[i]) path.push(i); yield { open, closed, expanded, path, pathCost: g[t], done: true }; return; }
+    const c = best % COLS, r = Math.floor(best / COLS);
+    for (const [dc, dr] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nc = c + dc, nr = r + dr;
+      if (nc < 0 || nr < 0 || nc >= COLS || nr >= ROWS) continue;
+      const n = idx(nc, nr); if (closed[n]) continue;
+      const ng = g[best] + cost[n]; if (ng < g[n]) { g[n] = ng; par[n] = best; open.add(n); }
+    }
+    yield { open, closed, expanded, done: false };
+  }
+}
+const solve = w => { let last; for (const s of astar(w)) last = s; return last; };
+
+/* === PIXEL MAP RENDERER (1 canvas px = 1 cell, scaled with pixelated rendering) === */
+function draw(cv, st) {
+  const x = cv.getContext('2d'), on = new Set(st && st.path || []);
+  for (let i = 0; i < COLS * ROWS; i++) {
+    let f = cost[i] > 1 ? '#3b2a4a' : '#0F1B3D';
+    if (st && st.closed[i]) f = cost[i] > 1 ? '#7a4a78' : '#24427a';
+    if (st && st.open.has(i)) f = '#5EDCF4';
+    if (on.has(i)) f = '#F4D03F';
+    x.fillStyle = f; x.fillRect(i % COLS, Math.floor(i / COLS), 1, 1);
+  }
+  x.fillStyle = '#7ee0a1'; x.fillRect(START[0], START[1], 1, 1);
+  x.fillStyle = '#F0A6CA'; x.fillRect(GOAL[0], GOAL[1], 1, 1);
+}
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function animate(pairs, onDone) {
+  const runs = pairs.map(p => ({ ...p, it: astar(p.w), st: null, done: false }));
+  let raf;
+  const tick = () => {
+    for (const r of runs) {
+      for (let k = 0; k < (reduce ? 1e4 : 2) && !r.done; k++) { const n = r.it.next(); if (n.done) { r.done = true; break; } r.st = n.value; if (r.st.done) r.done = true; }
+      if (r.st) { draw(r.cv, r.st); r.onStep && r.onStep(r.st); }
+    }
+    if (runs.some(r => !r.done)) raf = requestAnimationFrame(tick); else onDone && onDone();
+  };
+  tick();
+  return () => cancelAnimationFrame(raf);
+}
+
+/* === STARFIELD (pixel squares drifting left) === */
+const starCanvases = [...document.querySelectorAll('.stars')];
+const stars = [...Array(110)].map(() => [Math.random() * 1920, Math.random() * 1080, (Math.random() * 3 | 0) * 2 + 2]);
+function starFrame() {
+  const cv = document.querySelector('.slide.active .stars');
+  if (cv) { const x = cv.getContext('2d'); x.clearRect(0, 0, 1920, 1080);
+    for (const s of stars) { if (!reduce) s[0] = (s[0] - s[2] * 0.25 + 1920) % 1920; x.fillStyle = s[2] > 5 ? '#F4D03F' : s[2] > 3 ? '#F0A6CA' : '#5EDCF4'; x.fillRect(s[0] | 0, s[1] | 0, s[2], s[2]); } }
+  requestAnimationFrame(starFrame);
+}
+starFrame();
+
+/* === PER-SLIDE BEHAVIOUR === */
+const $ = id => document.getElementById(id);
+let stopAnim = null;
+const enter = {
+  0() { const loop = () => { stopAnim = animate([{ cv: $('m1'), w: 3, onStep: s => $('m1n').textContent = String(s.expanded).padStart(3, '0') }], () => setTimeout(() => document.querySelector('.slide.active') === slides[0] && loop(), 2500)); }; loop(); },
+  3() { tree.render(); },
+  4() { const t0 = performance.now(); let id; const step = now => { const p = Math.min(1, (now - t0) / 2500); drawChart(p); if (p < 1) id = requestAnimationFrame(step); }; id = requestAnimationFrame(step); stopAnim = () => cancelAnimationFrame(id); },
+  6() { showDemo(BASE); },
+};
+const leave = { 3() { tree.stop(); } };
+
+/* === KARAR AĞACI: binary tree exported from the verified Python run (seed 3765) === */
+/*TREE*/
+const TD = {"cost":[0,6,2,9,2,5,9,8,7,5,3,8,1,1,3,7,2,7,3,5,3,8,2,9,3,4,1,1,6,5,7,5,4,5,6,3,8,6,9,4,7,2,1,5,8,1,3,2,4,2,1,7,9,8,3,9,7,7,8,6,7,3,1,9,2,1,2,4,3,6,4,9,5,5,9,4,8,9,6,4,6,3,1,6,2,3,3,7,2,4,6,1,4,6,6,9,5,2,7,9,8,2,9,2,1,1,8,9,7,3,9,6,1,7,3,9,7,8,9,9,2,7,4,1,5,4,1,2,2,5,2,2,1,9,2,4,7,4,1,4,4,3,7,5,2,1,5,6,1,5,1,1,4,9,3,2,1,1,4,1,1,3,7,2,5,8,1,7,9,9,9,4,9,7,8,4,1,5,9,5,1,6,9,3,6,5,1,6,1,3,9,4,7,3,6,7,2,9,1,6,5,8,2,1,4,9,9,2,9,3,9,9,1,1,3,5,6,5,5,9,1,1,6,6,5,2,5,7,7,7,6,5,2,2,8,8,1,2,7,2,8,4,4,6,3,3,3,4,3,9,3,2,5,7,6,4,7,6,7,4,5,8,7,4,6,6,1,6,9,9,2,8,8,9,6,2,3,7,2,5,7,7,1,6,6,8,2,5,2,1,2,2,3,2,9,5,4,7,2,8,4,8,6,4,8,7,1,7,4,3,5,2,6,9,3,1,7,5,4,1,6,4,4,7,2,1,4,3,6,6,3,7,7,8,9,6,3,5,2,7,8,2,7,5,7,4,1,6,6,2,1,3,8,2,4,6,4,5,7,6,8,8,6,8,7,5,9,2,4,4,2,2,8,6,1,1,5,4,4,4,1,7,8,3,7,2,3,6,3,4,2,4,6,8,1,9,5,9,1,5,9,9,6,7,2,4,9,5,5,1,2,5,5,2,9,7,3,1,4,8,5,6,7,3,2,1,8,4,5,9,1,2,2,8,8,4,2,1,1,4,2,4,1,8,8,4,9,1,9,8,9,2,3,5,8,3,4,4,5,2,1,6,2,7,6,6,8,6,3,6,4,5,6,2,8,1,7,7,8,6,6,9,2,1,4,4,9,3,5,9,1,4,2,7,7,1,8,3,3,2,6,2,7,3,6,8,1,9,8,1,4,2,9,2,8,3,1,5,1,1,1,9,1,6,8,5,8,9,6,7,3,4,4,4,5,6,9,3,4,9,1,5,4,1,7,7,8,4,5,1,7,1,6,5,8,7,5,2,2,4,5,1,4,9,6,6,4,4,9,5,4,4,9,5,5,3,9,3,8,1,9,6,8,3,4,2,3,5,2,9,2,9,7,3,9,9,1,8,3,7,7,7,7,4,7,3,6,4,9,5,3,6,7,8,3,4,9,5,5,7,6,1,8,3,9,6,2,6,1,1,5,2,5,4,6,4,1,3,5,9,6,2,8,9,6,9,5,4,3,2,2,5,7,4,5,6,7,5,4,2,4,9,1,2,8,2,9,5,9,9,8,9,2,4,3,7,7,4,7,1,8,1,5,1,5,5,3,4,7,5,9,7,7,2,4,6,5,7,9,6,2,9,2,2,9,9,7,5,8,6,1,9,3,6,1,1,6,1,1,7,9,9,6,9,3,2,6,4,3,4,3,5,7,9,3,1,9,8,9,2,2,6,5,8,7,2,4,1,2,4,7,8,8,6,8,7,8,8,1,7,3,9,8,5,3,5,5,3,3,5,1,8,2,2,6,6,7,5,5,3,6,3,6,7,8,9,9,6,3,4,9,8,8,7,3,7,1,4,2,1,5,9,1,8,2,2,6,4,4,4,5,7,6,1,6,9,9,6,6,8,3,7,8,2,6,5,5,7,2,3,7,8,2,6,4,5,3,5,4,8,9,6,2,1,2,1,8,3,9,3,4,4,8,6,7,6,9,5,7,1,9,3,1,4,2,2,3,1,5,9,7,1,5,6,1,9,4,9,1,7,2,8,5,8,9,4,3,8,4,8,4,7,4,8,9,4,8,9,6,5,2,1,2,2,5,8,9,2,4,2,8,3,1,4,8,6,9,1,9,1,9,7,4,3,6,6,8,1,6,6,2,7,7,2,8,7,7,9,6,8,5,1,7,7,2,4,7,3,1,6,5,3,6,6,5,7,9,1,7,8,5,1,2,8,5,3,8,9,9,9,5,5,2,5,6,9,6,5,5,1,6,6,4,7,7,8,5,3,2,9,3,2,2,9,5,6,5,8,7,1,7,5,4,2,6,4,9,8,7,3,1,3,1,1,9,9,2,8,1,6,4,7,3],"h":[9,13,23,13,16,20,5,3,8,5,6,15,5,5,4,7,5,6,13,6,5,9,4,3,12,5,3,5,5,6,4,6,4,3,6,7,3,3,5,5,3,6,4,6,6,3,4,4,5,12,3,7,4,5,3,5,5,3,3,4,3,4,6,6,5,5,5,5,6,5,4,3,5,7,3,4,6,2,3,5,4,5,5,5,5,3,6,3,4,5,3,3,6,3,6,3,6,5,3,6,6,3,5,3,6,3,5,6,3,3,3,3,7,6,3,4,3,5,3,3,4,3,3,3,5,6,4,3,5,3,5,5,5,6,6,4,6,6,3,3,4,3,6,3,5,3,3,6,3,6,5,5,5,3,5,3,1,5,3,4,3,5,6,4,5,3,4,4,3,5,4,6,5,3,3,3,2,5,3,5,6,6,6,4,6,6,4,3,5,4,5,3,4,5,7,4,6,6,4,5,3,3,5,4,5,7,3,5,4,5,6,6,5,5,6,5,4,4,3,4,3,3,4,6,5,5,5,4,3,5,4,4,3,3,3,6,6,6,4,5,5,4,3,4,6,6,5,4,6,3,6,5,6,3,3,6,4,5,5,3,5,4,3,5,3,6,5,4,4,7,3,4,4,7,6,6,3,4,5,6,4,3,6,3,4,4,7,4,6,5,3,3,6,1,3,6,6,3,5,5,3,6,4,6,3,3,3,5,6,6,4,5,3,6,0,6,4,3,4,4,4,3,5,6,4,6,4,4,3,3,3,5,4,4,4,7,7,3,3,3,3,5,3,3,4,3,4,3,3,6,6,6,7,6,0,3,6,7,7,3,6,6,5,4,3,3,3,4,6,3,4,3,5,6,5,4,6,6,7,6,7,4,6,3,3,5,3,4,6,6,6,3,6,3,5,6,5,5,4,3,6,6,1,7,4,4,6,6,3,6,5,3,3,4,4,6,5,5,6,5,6,6,6,4,5,5,5,6,6,6,5,4,5,5,3,7,4,4,5,4,4,5,6,4,3,5,6,6,4,3,4,4,4,4,3,6,4,5,6,3,3,6,5,3,3,6,4,3,7,4,4,3,3,3,6,3,6,3,3,5,6,3,4,6,5,5,5,3,4,4,3,6,7,4,3,6,6,6,4,5,5,5,3,4,4,5,6,4,6,6,6,4,5,3,6,3,5,5,6,4,6,4,6,4,6,6,3,4,4,3,4,5,4,4,6,3,4,3,5,4,6,4,3,5,4,4,6,6,5,4,6,4,4,6,5,5,4,6,6,4,3,6,3,6,3,4,6,4,3,3,4,6,6,5,6,4,5,4,5,5,5,5,4,3,5,5,4,0,4,5,6,5,4,4,4,5,5,6,3,3,3,6,7,5,6,5,6,6,5,4,4,5,3,4,4,6,4,5,3,4,5,6,3,3,6,4,4,3,6,0,6,6,4,5,3,3,7,3,6,5,3,3,5,4,3,6,3,5,5,6,4,4,4,5,6,6,4,5,4,6,6,5,5,6,4,4,3,7,4,3,3,3,3,3,4,6,5,3,6,4,5,6,4,5,6,3,3,5,4,5,5,3,6,3,4,4,7,6,6,4,5,4,3,4,7,5,6,3,4,6,0,3,4,4,4,5,5,6,4,5,4,4,3,7,3,3,5,5,4,5,4,3,6,3,4,6,4,4,3,4,3,6,4,3,4,6,6,3,4,3,4,3,6,3,6,6,3,5,4,3,4,6,3,3,3,5,4,5,6,4,4,3,5,6,4,3,4,3,4,3,3,6,4,3,5,3,4,4,4,4,6,5,5,4,6,5,4,5,4,6,3,5,4,3,4,0,5,4,4,5,5,3,5,6,4,3,6,4,4,3,3,6,7,5,5,6,4,6,4,3,3,5,4,6,3,7,5,6,4,5,4,6,6,4,5,5,4,7,4,4,5,3,7,4,6,3,6,3,6,4,3,6,4,6,6,6,3,5,6,4,5,6,3,7,6,6,7,4,6,6,6,6,5,4,4,5,5,6,5,3,6,3,6,7,3,3,6,3,3,5,5,6,6,4,4,5,5,6,5,6,3,6,6,6,5,6,4,7,5,3,6,3,5,6,4,6,6,3,6,7,6,4,6,3,5,4,5,3,4,3,5,3,5,5,5,5,4,3,4,3,6,4,4,6,7,7,6,6,5,6,4,6,5,5,4,4,3,6,3,3,4,6,3,3,6,7,6,4,3,7,7,3,3,5,5,4,7,6,5,5,6,6,7,7,4,5,3,5,4,6,5,4,3,3,3,3,5,5,6,3,6,5,5,4,3,7,3,5,5,5,4,3,3],"goals":[587,629,710,805]};
+const TGOAL = new Set(TD.goals), TN = TD.cost.length;
+const tg = [0]; for (let k = 1; k < TN; k++) tg[k] = tg[(k - 1) >> 1] + TD.cost[k];
+const tdep = k => Math.floor(Math.log2(k + 1));
+function treeTrace(w) {
+  const op = new Map([[0, 0]]), steps = [], gen = [0], f = n => tg[n] + w * TD.h[n];
+  let seq = 0;
+  while (op.size) {
+    const ranked = [...op.keys()].sort((a, b) => f(a) - f(b) || TD.h[a] - TD.h[b] || op.get(a) - op.get(b));
+    const b = ranked[0], done = TGOAL.has(b);
+    op.delete(b);
+    if (!done) for (const k of [2 * b + 1, 2 * b + 2]) if (k < TN) { op.set(k, ++seq); gen.push(k); }
+    steps.push({ node: b, ranked, genCount: gen.length, done });
+    if (done) break;
+  }
+  return { w, steps, gen, f, cost: tg[steps.at(-1).node] };
+}
+/*TREE*/
+const pathOf = n => { const p = []; for (; n >= 0; n = n ? (n - 1) >> 1 : -1) p.unshift(n); return p; };
+const TR = { 1: treeTrace(1), 3: treeTrace(3) };
+
+function treeState(tr, k) {
+  const vis = tr.gen.slice(0, k ? tr.steps[k - 1].genCount : 1);
+  const exp = new Set(tr.steps.slice(0, k).map(s => s.node));
+  const done = k === tr.steps.length;
+  const open = vis.filter(n => !exp.has(n)).sort((a, b) => tr.f(a) - tr.f(b) || TD.h[a] - TD.h[b]);
+  return { vis, exp, done, open, cur: k ? tr.steps[k - 1].node : -1, rival: k ? tr.steps[k - 1].ranked[1] : undefined };
+}
+
+function drawTree(tr, k) {
+  const cv = $('tree'), x = cv.getContext('2d'), W = cv.width, ROW = 80, TOP = 40;
+  const by = {}; for (const n of tr.gen) (by[tdep(n)] ||= []).push(n);
+  const pos = {};
+  for (const d in by) { const a = by[d].sort((p, q) => p - q), slot = W / a.length; a.forEach((n, i) => pos[n] = { x: slot * (i + .5), y: TOP + d * ROW, slot }); }
+  const s = treeState(tr, k), path = new Set(s.done ? pathOf(s.cur) : []);
+  x.clearRect(0, 0, W, cv.height);
+  for (const n of s.vis) if (n) {
+    const p = pos[n], q = pos[(n - 1) >> 1];
+    x.strokeStyle = path.has(n) ? '#F4D03F' : s.exp.has(n) ? 'rgba(94,220,244,.7)' : 'rgba(240,166,202,.45)';
+    x.lineWidth = path.has(n) ? 6 : 2;
+    x.beginPath(); x.moveTo(q.x, q.y); x.lineTo(p.x, p.y); x.stroke();
+  }
+  for (const n of s.vis) {
+    const p = pos[n], lab = p.slot >= 44, bw = lab ? Math.min(p.slot - 6, 72) : Math.max(4, Math.min(p.slot - 2, 12)), bh = lab ? 36 : bw;
+    const isGoal = s.done && n === s.cur, open = !s.exp.has(n);
+    let fill = '#5EDCF4', txt = '#0F1B3D';
+    if (n === s.cur) fill = isGoal ? '#F0A6CA' : '#F4D03F';
+    else if (open) { fill = '#0F1B3D'; txt = '#F0A6CA'; }
+    x.fillStyle = fill; x.fillRect(p.x - bw / 2, p.y - bh / 2, bw, bh);
+    if (open) { x.strokeStyle = '#F0A6CA'; x.lineWidth = 3; x.strokeRect(p.x - bw / 2, p.y - bh / 2, bw, bh); }
+    if (n === s.rival && !s.done) { x.strokeStyle = '#F0A6CA'; x.lineWidth = 4; x.strokeRect(p.x - bw / 2 - 6, p.y - bh / 2 - 6, bw + 12, bh + 12); }
+    if (lab) { x.fillStyle = txt; x.font = `700 ${bw >= 60 ? 20 : 16}px "Space Mono", monospace`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(tr.f(n), p.x, p.y + 1); }
+    if (isGoal) { x.fillStyle = '#F0A6CA'; x.font = '700 22px "Space Mono", monospace'; x.textAlign = 'center'; x.fillText('KALE', p.x, p.y + 32); }
+  }
+  // side panel: OPEN list (next choice on top) and the reason for the last choice
+  const list = s.done ? s.open : tr.steps[k].ranked;
+  const row = n => `<span>f ${tr.f(n)}</span><span>${tg[n]} + ${tr.w}·${TD.h[n]}</span>`;
+  $('olist').innerHTML = list.slice(0, 9).map((n, i) => `<div class="${i || s.done ? '' : 'top'}">${row(n)}</div>`).join('') + (list.length > 9 ? `<div class="more">+${list.length - 9} düğüm daha</div>` : '');
+  const fc = k ? tr.f(s.cur) : 0, fr = s.rival === undefined ? null : tr.f(s.rival);
+  $('tcmp').innerHTML = !k ? `Kök: f = 0 + ${tr.w}·${TD.h[0]} = <b>${tr.f(0)}</b><br>→ ile adım adım ilerle`
+    : s.done ? `<b>KALE: ${tr.cost} dk</b><br>${k} düğüm açıldı. Bekleyen ${s.open.length} düğümün en küçük f'si <b>${tr.f(s.open[0])}</b> ≥ ${fc}, gerek kalmadı.`
+    : `Seçilen f = <b>${fc}</b>` + (fr === null ? '' : `<br>En yakın rakip f = <b style="color:var(--pink)">${fr}</b><br>${fc < fr ? `${fc} &lt; ${fr} → bu dal açıldı` : 'Eşit f → h küçük olan önce'}`);
+  $('tstep').textContent = `Adım ${k} / ${tr.steps.length}`;
+}
+
+const tree = {
+  tr: TR[3], k: 0, raf: 0,
+  set(w) { this.stop(); this.tr = TR[w]; this.k = 0; $('tw3').classList.toggle('on', w === 3); $('tw1').classList.toggle('on', w === 1); this.render(); },
+  render() { drawTree(this.tr, this.k); },
+  stop() { cancelAnimationFrame(this.raf); this.raf = 0; },
+  ff() {
+    this.stop(); const n = this.tr.steps.length, per = n / 180; let acc = this.k;
+    const tick = () => { acc = Math.min(n, acc + per); const k = Math.max(this.k + 1, Math.floor(acc)); this.k = Math.min(n, k); this.render(); if (this.k < n) this.raf = requestAnimationFrame(tick); };
+    if (this.k < n) tick();
+  },
+  key(e) {
+    const k = e.key;
+    if (k === 'w' || k === 'W') { this.set(this.tr.w === 3 ? 1 : 3); return true; }
+    if (k === 'f' || k === 'F') { this.ff(); return true; }
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(k) && this.k < this.tr.steps.length) { e.preventDefault(); this.stop(); this.k++; this.render(); return true; }
+    if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(k) && this.k > 0) { e.preventDefault(); this.stop(); this.k--; this.render(); return true; }
+    return false;
+  },
+};
+$('tw3').addEventListener('click', () => tree.set(3));
+$('tw1').addEventListener('click', () => tree.set(1));
+$('tff').addEventListener('click', () => tree.ff());
+
+/* === RADIAL VIEW OF THE WHOLE TREE (slides 2 and 7): root in the centre, one ring per depth === */
+function drawRadial(cv, tr, k) {
+  const x = cv.getContext('2d'), C = cv.width / 2;
+  const P = n => { const d = tdep(n), a = 2 * Math.PI * (n - 2 ** d + 1.5) / 2 ** d - Math.PI / 2, r = d ? 40 + (d - 1) * 38 : 0; return [C + r * Math.cos(a), C + r * Math.sin(a)]; };
+  const exp = new Set(tr ? tr.steps.slice(0, k).map(s => s.node) : []);
+  const done = tr && k === tr.steps.length, path = new Set(done ? pathOf(tr.steps.at(-1).node) : []);
+  const edges = (nodes, color, width) => { x.strokeStyle = color; x.lineWidth = width; x.beginPath(); for (const n of nodes) if (n) { const [a, b] = P(n), [c, d] = P((n - 1) >> 1); x.moveTo(c, d); x.lineTo(a, b); } x.stroke(); };
+  x.clearRect(0, 0, cv.width, cv.height);
+  edges(TD.cost.keys(), tr ? 'rgba(94,220,244,.14)' : 'rgba(94,220,244,.5)', tr ? 1 : 1.5);
+  edges(exp, '#5EDCF4', 2.5);
+  edges(path, '#F4D03F', 6);
+  for (const n of exp) { const [a, b] = P(n); x.fillStyle = path.has(n) ? '#F4D03F' : '#5EDCF4'; x.fillRect(a - 3, b - 3, 6, 6); }
+  for (const n of TD.goals) { const [a, b] = P(n); x.fillStyle = '#F0A6CA'; x.fillRect(a - 9, b - 9, 18, 18); if (path.has(n)) { x.strokeStyle = '#F4D03F'; x.lineWidth = 4; x.strokeRect(a - 16, b - 16, 32, 32); } }
+  x.fillStyle = '#7ee0a1'; x.fillRect(C - 12, C - 12, 24, 24);
+  x.font = '700 22px "Space Mono", monospace'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('KÖY', C, C + 34);
+}
+
+/* === SLIDE 5: f of every expanded node (line) and g vs w·h along the found path (bars) === */
+function drawChart(p) {
+  const cv = $('fchart'), x = cv.getContext('2d'), L = 90, R = 1030, T = 30, B = 490, XM = 240, YM = 60;
+  const sx = i => L + (R - L) * i / XM, sy = v => B - (B - T) * v / YM;
+  x.clearRect(0, 0, cv.width, cv.height);
+  x.font = '400 18px "Space Mono", monospace'; x.fillStyle = 'rgba(255,255,255,.55)'; x.textBaseline = 'middle';
+  for (let v = 0; v <= YM; v += 10) { x.strokeStyle = 'rgba(94,220,244,.12)'; x.lineWidth = 1; x.beginPath(); x.moveTo(L, sy(v)); x.lineTo(R, sy(v)); x.stroke(); x.textAlign = 'right'; x.fillText(v, L - 14, sy(v)); }
+  x.textAlign = 'center'; for (let i = 0; i <= 200; i += 50) x.fillText(i, sx(i), B + 26);
+  x.fillText('adım →', R - 40, B + 54); x.save(); x.translate(26, T + 20); x.fillText('f', 0, 0); x.restore();
+  for (const [v, c, t] of [[37, '#5EDCF4', 'en iyi = 37'], [49, '#F0A6CA', 'w=3 buldu = 49']]) {
+    x.setLineDash([10, 10]); x.strokeStyle = c; x.lineWidth = 2; x.beginPath(); x.moveTo(L, sy(v)); x.lineTo(R, sy(v)); x.stroke(); x.setLineDash([]);
+    x.fillStyle = c; x.textAlign = 'right'; x.font = '700 18px "Space Mono", monospace'; x.fillText(t, R, sy(v) - 16);
+  }
+  const cursor = p * TR[1].steps.length;
+  for (const [tr, c] of [[TR[1], '#5EDCF4'], [TR[3], '#F0A6CA']]) {
+    const vals = tr.steps.map(st => tr.f(st.node)), n = Math.min(vals.length, Math.ceil(cursor));
+    if (!n) continue;
+    x.strokeStyle = c; x.lineWidth = 4; x.beginPath(); x.moveTo(sx(0), sy(vals[0]));
+    for (let i = 1; i < n; i++) { x.lineTo(sx(i), sy(vals[i - 1])); x.lineTo(sx(i), sy(vals[i])); }
+    x.stroke();
+    const e = n - 1; x.fillStyle = c; x.fillRect(sx(e) - 8, sy(vals[e]) - 8, 16, 16);
+    if (n === vals.length) { x.font = '700 22px "Space Mono", monospace'; x.textAlign = tr.w === 3 ? 'left' : 'right'; x.fillText(`${vals.length} adım`, sx(e) + (tr.w === 3 ? 18 : -18), sy(vals[e]) + (tr.w === 3 ? -26 : 30)); }
+  }
+  drawBars();
+}
+function drawBars() {
+  const cv = $('fbars'), x = cv.getContext('2d'), YM = 60, BH = 190;
+  x.clearRect(0, 0, cv.width, cv.height); x.textAlign = 'center'; x.textBaseline = 'middle';
+  [[TR[1], 20], [TR[3], 290]].forEach(([tr, top]) => {
+    const path = pathOf(tr.steps.at(-1).node), base = top + 40 + BH;
+    x.font = '700 22px "Space Mono", monospace'; x.textAlign = 'left'; x.fillStyle = tr.w === 3 ? '#F0A6CA' : '#5EDCF4';
+    x.fillText(`w = ${tr.w} · yol boyunca f = g + ${tr.w}·h`, 0, top + 12); x.textAlign = 'center';
+    path.forEach((n, d) => {
+      const bx = 20 + d * 62, g = tg[n], wh = tr.w * TD.h[n], hg = BH * g / YM, hw = BH * wh / YM;
+      x.fillStyle = '#5EDCF4'; x.fillRect(bx, base - hg, 44, hg);
+      x.fillStyle = '#F4D03F'; x.fillRect(bx, base - hg - hw, 44, hw);
+      x.fillStyle = '#fff'; x.font = '700 16px "Space Mono", monospace'; x.fillText(g + wh, bx + 22, base - hg - hw - 14);
+    });
+  });
+  x.font = '400 18px "Space Mono", monospace'; x.textAlign = 'left';
+  x.fillStyle = '#5EDCF4'; x.fillRect(0, 536, 18, 18); x.fillStyle = 'rgba(255,255,255,.75)'; x.fillText('g (gerçek)', 28, 546);
+  x.fillStyle = '#F4D03F'; x.fillRect(200, 536, 18, 18); x.fillStyle = 'rgba(255,255,255,.75)'; x.fillText('w·h (tahmin)', 228, 546);
+  x.fillText('kök → kale', 470, 546);
+}
+
+/* === LIVE DEMO (slide 7): weight slider on the same tree === */
+const WS = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5], WR = Object.fromEntries(WS.map(w => [w, TR[w] || treeTrace(w)]));
+const BEST = WR[1].cost, BASE = WR[1].steps.length;
+function showDemo(k) {
+  const tr = WR[+$('wIn').value], n = tr.steps.length, done = k === n, worse = tr.cost - BEST;
+  drawRadial($('radial7'), tr, k);
+  $('dN').textContent = k;
+  $('dC').textContent = done ? tr.cost : '–';
+  $('dC').style.color = done && worse ? 'var(--pink)' : '';
+  $('dCl').textContent = !done ? 'Yol, dakika' : worse ? `Yol, dakika · en iyiden ${worse} dk uzun` : 'Yol, dakika · en iyi yol';
+  const kat = (BASE / n).toFixed(1).replace('.', ',');
+  $('dNote').innerHTML = !done ? '' : tr.w === 1 ? 'En iyi yol, ama en çok iş.'
+    : !worse ? `Aynı en iyi yol, <span class="hl">${kat} kat</span> daha az iş.`
+    : `<span class="hl">${kat} kat</span> daha hızlı karar, ama yol ${worse} dk uzun: daha iyi değil, <span class="pk">yeterince iyi</span>.`;
+  drawWBars(tr.w);
+}
+function drawWBars(cur) {
+  const cv = $('wbars'), x = cv.getContext('2d'), B = 260, H = 200, bw = 64, gap = (cv.width - WS.length * bw) / WS.length;
+  x.clearRect(0, 0, cv.width, cv.height); x.textBaseline = 'middle';
+  x.textAlign = 'left'; x.fillStyle = 'rgba(255,255,255,.6)'; x.font = '400 18px "Space Mono", monospace';
+  x.fillText('çubuk = bakılan kavşak · altta yol süresi', 0, 12);
+  x.textAlign = 'center';
+  WS.forEach((w, i) => {
+    const t = WR[w], n = t.steps.length, bx = gap / 2 + i * (bw + gap), hh = H * n / BASE, best = t.cost === BEST;
+    x.fillStyle = w === cur ? '#F4D03F' : best ? '#5EDCF4' : '#F0A6CA'; x.fillRect(bx, B - hh, bw, hh);
+    x.fillStyle = '#fff'; x.font = '700 20px "Space Mono", monospace'; x.fillText(n, bx + bw / 2, B - hh - 16);
+    x.fillStyle = 'rgba(255,255,255,.7)'; x.font = '400 18px "Space Mono", monospace'; x.fillText('w=' + w, bx + bw / 2, B + 22);
+    x.fillStyle = best ? '#5EDCF4' : '#F0A6CA'; x.font = '700 20px "Space Mono", monospace'; x.fillText(t.cost + ' dk', bx + bw / 2, B + 52);
+  });
+}
+$('wIn').addEventListener('input', e => { stopAnim && stopAnim(); $('wOut').textContent = e.target.value; showDemo(WR[+e.target.value].steps.length); });
+$('play').addEventListener('click', () => {
+  stopAnim && stopAnim();
+  const n = WR[+$('wIn').value].steps.length, per = n / 120; let acc = 0, id;
+  const tick = () => { acc = Math.min(n, acc + per); showDemo(Math.max(1, Math.floor(acc))); if (acc < n) id = requestAnimationFrame(tick); };
+  stopAnim = () => cancelAnimationFrame(id); tick();
+});
+
+/* === SLIDE PRESENTATION CONTROLLER === */
+const slides = [...document.querySelectorAll('.slide')];
+class SlidePresentation {
+  constructor() {
+    this.i = 0; this.stage = $('deckStage');
+    const scale = () => { const f = Math.min(innerWidth / 1920, innerHeight / 1080); this.stage.style.transform = `translate(${(innerWidth - 1920 * f) / 2}px, ${(innerHeight - 1080 * f) / 2}px) scale(${f})`; };
+    scale(); addEventListener('resize', scale);
+    addEventListener('keydown', e => {
+      if (e.target.matches('input')) return;
+      if (this.i === 3 && tree.key(e)) return;
+      if (['ArrowRight','ArrowDown','PageDown',' '].includes(e.key)) { e.preventDefault(); this.go(this.i + 1); }
+      else if (['ArrowLeft','ArrowUp','PageUp'].includes(e.key)) { e.preventDefault(); this.go(this.i - 1); }
+      else if (e.key === 'Home') this.go(0); else if (e.key === 'End') this.go(slides.length - 1);
+    });
+    let tx = 0; addEventListener('touchstart', e => tx = e.touches[0].clientX, { passive: true });
+    addEventListener('touchend', e => { const d = e.changedTouches[0].clientX - tx; if (Math.abs(d) > 50) this.go(this.i + (d < 0 ? 1 : -1)); });
+    let lock = 0; addEventListener('wheel', e => { if (Date.now() < lock || e.target.matches('input')) return; lock = Date.now() + 800; this.go(this.i + (e.deltaY > 0 ? 1 : -1)); }, { passive: true });
+    this.go((parseInt(location.hash.slice(1)) || 1) - 1, true);
+  }
+  go(n, first) {
+    n = Math.max(0, Math.min(n, slides.length - 1)); if (n === this.i && !first) return;
+    stopAnim && stopAnim(); stopAnim = null; leave[this.i] && leave[this.i]();
+    this.i = n;
+    slides.forEach((s, k) => { s.classList.toggle('active', k === n); s.classList.toggle('visible', k === n); });
+    $('counter').textContent = String(n + 1).padStart(2, '0') + ' / ' + String(slides.length).padStart(2, '0');
+    enter[n] && enter[n]();
+  }
+}
+const deck = new SlidePresentation();
+drawRadial($('radial2'), null, 0); showDemo(BASE);
+</script>
+</body>
+</html>
